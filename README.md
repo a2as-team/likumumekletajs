@@ -8,7 +8,7 @@
 
 **🌐 Web Version Available**: Non-programmers can access this service at **[likumumekletajs.lv](https://likumumekletajs.lv)** - submit queries and pay for running code without hassle of local setup.
 
-Open-source multi-agent system using Google's ADK to automatically
+Open-source multi-agent system using Google's ADK to automate lookup of new Latvian legislative documents and amendments in a given time period for topic/domian/field of interest.
 
 ---
 
@@ -68,7 +68,7 @@ result = runner.run(session_id=session.id, content={
 print(result.messages[-1].content)  # Latvian report with sources
 ```
 
-**Non-Programmers**: Use [likumumekletajs.lv](https://likumumekletajs.lv) - no setup required
+**Non-Programmers**: Use [likumumekletajs.lv](https://likumumekletajs.lv) - no setup required, pay per use.
 
 ---
 
@@ -85,11 +85,11 @@ print(result.messages[-1].content)  # Latvian report with sources
 4. **Quality Loop**: LoopAgent validates translation (Critic → Refiner, max 4 iterations)
 5. **Output**: Structured Markdown with source citations
 
-**17 Document Types Covered**:
+**11 Document Types Covered**:
 
 - **Likumi**: Published legal acts (3 date dimensions)
 - **TAP**: Drafts, meetings, tasks, declassified docs, notices (6 types, 8+ date fields)
-- **Saeima**: Legislation, questions, requests, agendas, committees (6 types, JavaScript-rendered)
+- **Saeima**: Legislation, questions, requests, agendas, committees (4 types, JavaScript-rendered)
 
 **Production Validation**: 69-document query → 4 batches → 3 relevant results, 0 errors
 
@@ -231,13 +231,13 @@ Agent cannot respond until ALL documents processed:
 
 - Browser fallback (Playwright) architecture for Lotus Notes/Domino
 - Graceful degradation: requests → selenium if needed
-- Proven with Saeima.lv (6 document types, all JavaScript)
+- Proven with Saeima.lv (4 document types, all JavaScript)
 
 ### Multi-Source Pattern Comparison
 
 | Aspect          | Likumi                          | TAP                          | Saeima                          |
 | --------------- | ------------------------------- | ---------------------------- | ------------------------------- |
-| Document Types  | 1                               | 6 (varying structures)       | 5 (JavaScript-rendered)         |
+| Document Types  | 1                               | 6 (varying structures)       | 4 (JavaScript-rendered)         |
 | Date Dimensions | 3 (uniform)                     | 8+ (per type)                | 4+ (per type)                   |
 | Scraper Pattern | Daily endpoints                 | Type-specific functions      | Chronological estimation        |
 | Search Strategy | 3-5 parallel keyword variations | Empty keyword (fetch all)    | Empty keyword (estimated range) |
