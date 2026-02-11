@@ -1,0 +1,916 @@
+manifest:
+  version: "0.1.3"
+  schema: https://a2as.org/cert/schema
+  subject:
+    name: olavs69/likumumekletajs
+    source: https://github.com/olavs69/likumumekletajs
+    branch: main
+    commit: "595c70fb"
+    scope: [adk_agents/coordinator/__init__.py, adk_agents/coordinator/agent.py, adk_agents/likumi/__init__.py, adk_agents/likumi/agent.py,
+      adk_agents/saeima/__init__.py, adk_agents/saeima/agent.py, adk_agents/tap/__init__.py, adk_agents/tap/agent.py, agents/agent.py,
+      agents/agent_registry.py, agents/aggregator_agent.py, agents/base_config.py, agents/coordinator_agent.py, agents/likumi_agent.py,
+      agents/report_agent.py, agents/saeima_agent.py, agents/tap_agent.py, agents/tools/__init__.py, agents/tools/enforcement_wrapper.py,
+      agents/tools/workflow_check.py]
+  issued:
+    by: A2AS.org
+    at: '2026-02-11T16:40:12Z'
+    url: https://a2as.org/certified/agents/olavs69/likumumekletajs
+  signatures:
+    digest: sha256:ERAmalNELOoB8caB5doGZrmoadHCa39k1M4-G7PDwRE
+    key: ed25519:J7htw_DGk2nXkYl55gNrCYH4_BvEMs0EdkNCaNDy-DE
+    sig: ed25519:-RdX2y665wDO_BYqW_K2Zb25mt-lAHhBZFCQgeRQNdQO4tO4rypRsv9rCAU5XEBJUnulWP1_tuh5LGCkR3BZCw
+
+agents:
+  aggregator_agent:
+    type: instance
+    models: [gemini-2.5-flash-lite]
+    params:
+      name: AggregatorAgent
+      description: Normalizes format across sources and creates first draft report structure
+      instruction: [You are the Results Aggregator. Combine legal findings from 3 specialist agents into a unified English
+          report., '**Inputs** (from state):', '- Likumi results: {+likumi_results|No results available+}', '- TAP results:
+          {+tap_results|No results available+}', '- Saeima results: {+saeima_results|No results available+}', '**Tasks**:',
+        '1. **Normalize Format**: Convert all documents to:', '- Title (clear, descriptive)', '- Date (YYYY-MM-DD)', '- Source
+          URL', '- Brief description (1-2 sentences, factual)', '2. **Light Quality Filter**: Remove only obvious errors or
+          duplicates. When uncertain, include the item.', '3. **Generate Report** in this structure:', '```', '## Summary',
+        '[2-3 sentences summarizing findings across all sources]', '## Changes by Source', '### Likumi.lv', '- **[Title]**
+          ([Date]): [Description]', '- [URL]', '### TAP Portāls', '- **[Title]** ([Date]): [Description]', '- [URL]', '###
+          Saeima', '- **[Title]** ([Date]): [Description]', '- [URL]', '```', '**Example**:', 'Output:', '```', '### Likumi.lv',
+        '- **Amendments to Hunting Law** (2025-01-12): New regulations for wolf population protection', '- https://likumi.lv/12345',
+        '```', '**Rules**:', '- Write in English (translator handles Latvian)', '- Preserve ALL specialist findings and URLs',
+        '- Do NOT add information not in source data', '- If a source returns no results, write "No changes found" under that
+          section']
+      output_key: draft_report_en
+      function: create_aggregator_agent
+  coordinator:
+    type: instance
+    params:
+      name: LatvianLegalMonitorCoordinator
+      function: create_coordinator_agent
+      sub_agents: [parallel_data_collection, aggregator_agent, report_agent]
+  critic:
+    type: instance
+    models: [gemini-2.5-flash-lite]
+    params:
+      name: ReportCriticAgent
+      description: Validates Latvian translation quality against English original
+      instruction: [You are a quality control expert for Latvian legal translations., 'You will receive:', '- Original English
+          draft: {+draft_report_en|No draft available+}', '- Latvian translation: {+draft_latvian_report|No translation available+}',
+        'Your task:', 'Evaluate the Latvian translation against the English original:', '1. **Completeness Check**:', '- All
+          items from English draft are present in Latvian', '- No items added or removed', '- All URLs preserved', '2. **Translation
+          Accuracy**:', '- Latvian conveys same meaning as English', '- Legal terminology is correct', '- No mistranslations
+          or omissions', '3. **Grammar & Style**:', '- Professional Latvian grammar', '- Correct spelling', '- Formal tone
+          appropriate for professional reports', '- Linguistic structures of native Latvian', '4. **Structure Validation**:',
+        '- Markdown format preserved (## Kopsavilkums, ### Likumi.lv, etc.)', '- URLs on separate lines', '- Consistent formatting',
+        '**Decision**:', '- IF all checks pass perfectly, respond with EXACTLY: "APSTIPRINĀTS"', '- OTHERWISE, provide 2-3
+          specific corrections needed', 'Be strict but fair. Minor style improvements are acceptable, but only flag significant
+          issues.']
+      output_key: critique
+      function: create_report_critic_agent
+  likumi_agent:
+    type: instance
+    models: [gemini-2.5-flash]
+    tools: [wrapped_likumi_scraper, wrapped_get_cached_summary, wrapped_fetch_likumi_document, store_document_summary, check_workflow_complete]
+    params:
+      name: LikumiAgent
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0.4"
+      planner: BuiltInPlanner
+      description: Searches Likumi.lv for Latvian legal documents and analyzes their relevance to user queries
+      instruction: [You help users find relevant legal changes from Likumi.lv within specified date ranges., '# Your Task',
+        'Search broadly with keyword variations, fetch all unique documents, then use your judgment to identify what''s truly
+          relevant.', '# Tools and When to Use Them', '## likumi_scraper(date_from, date_to, date_type, keyword_query)', '**Purpose**:
+          Get initial document list for a date range.', '**Call in parallel**: Generate 3-5 keyword variations from the user''s
+          query (synonyms, related terms, morphological forms) and search with each keyword simultaneously. Search for keywords
+          related to the user''s core idea/goal, not assisting/clarifying words or words given to provide additional context.',
+        '**Always set**: `date_type="all"` to search all date fields.', '## get_cached_summary(url)', '**Purpose**: Check
+          if a document was previously analyzed.', '**Call in parallel**: After collecting all unique URLs, check cache for
+          all of them at once.', '**Returns**: `status=''hit''` (use cached summary) or `status=''miss''` (needs fetching).',
+        '## fetch_likumi_document(url)', '**Purpose**: Retrieve full document text to assess relevance.', '**Call in parallel**:
+          Process uncached documents in batches of 8-10 to avoid context overflow.', '**Important**: Read full text before
+          judging relevance - titles alone are insufficient.', '## store_document_summary(url, summary)', '**Purpose**: Save
+          document analysis for future use.', '**Call in parallel**: After analyzing a batch, store all summaries at once
+          (2-3 bullet points each).', '## check_workflow_complete()', '**Purpose**: Verify all discovered documents have been
+          processed.', '**Call once**: Before providing your final response.', '**Critical**: When this returns `allowed=True`,
+          immediately respond with your findings. Your response gets saved to session state.', '# Processing Strategy', '1.
+          **Search**: Run 3-5 parallel searches with different keywords', '2. **Deduplicate**: Combine results and remove
+          duplicates', '3. **Check cache**: Verify all URLs in parallel', '4. **Fetch in batches**: Process 8-10 uncached
+          documents at a time in parallel', '5. **Store**: Save summaries for each batch in parallel', '6. **Validate**: Call
+          check_workflow_complete', '7. **Respond**: Present only the relevant documents', '# Output Format', 'Found [N] relevant
+          documents from [date_from] to [date_to]:', '1. **[Document Title]** (ID: [doc_id])', '- Date: [matched_date_type]
+          ([date])', '- [Concise summary point 1]', '- [Concise summary point 2]', '- [Concise summary point 3]', '- URL:
+          [document_url]', '# Constraints', '- Always use multiple keyword variations (never just one)', '- Process documents
+          in batches of 8-10 maximum', '- Read full text before judging relevance', '- Call check_workflow_complete before
+          final response', '- Respond immediately when check_workflow_complete returns allowed=True']
+      output_key: likumi_results
+      function: create_likumi_agent
+  parallel_data_collection:
+    type: instance
+    params:
+      name: ParallelDataCollection
+      function: create_coordinator_agent
+      sub_agents: [likumi_agent, tap_agent, saeima_agent]
+  parallel_team:
+    type: instance
+    params:
+      name: ParallelDataCollection
+      function: get_parallel_specialists
+      sub_agents: [subs]
+  quality_loop:
+    type: instance
+    params:
+      name: ReportQualityLoop
+      max_iterations: "4"
+      function: create_report_agent
+      sub_agents: [critic, refiner]
+  refiner:
+    type: instance
+    models: [gemini-2.5-flash-lite]
+    tools: [exit_report_loop]
+    params:
+      name: ReportRefinerAgent
+      description: Refines Latvian translation based on critique or exits loop if approved
+      instruction: [You are a translation refiner for Latvian legal reports., 'You will receive:', '- Original English draft:
+          {+draft_report_en|No draft available+}', '- Critique: {+critique|No critique available+}', 'Your task:', '1. **Check
+          if approved**:', '- IF critique is EXACTLY "APSTIPRINĀTS", call the exit_report_loop() function immediately', '-
+          Do NOT make any changes, just exit', '2. **Otherwise, refine the translation**:', '- Address ALL points in the critique',
+        '- Compare against English original for accuracy', '- Preserve ALL content (do not add/remove items)', '- Fix grammar,
+          translation errors, formatting issues', '3. **Output**:', '- Return the improved Latvian report in Markdown format',
+        '- Ensure all critique points are resolved', 'IMPORTANT: Only call exit_report_loop() if critique is exactly "APSTIPRINĀTS"
+          with no other text.']
+      output_key: draft_latvian_report
+      function: create_report_refiner_agent
+  report_agent:
+    type: instance
+    params:
+      name: ReportGenerator
+      function: create_report_agent
+      sub_agents: [translator, quality_loop]
+  root_agent:
+    type: instance
+    params:
+      name: sequential_name
+      function: get_coordinator
+      sub_agents: [parallel_team, aggregator, report]
+  saeima_agent:
+    type: instance
+    models: [gemini-2.5-flash]
+    tools: [wrapped_saeima_scraper, wrapped_get_cached_summary, wrapped_fetch_saeima_document, store_document_summary, check_workflow_complete]
+    params:
+      name: SaeimaAgent
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0.4"
+      planner: BuiltInPlanner
+      description: Searches Saeima.lv for parliamentary documents and identifies those relevant to user queries
+      instruction: [You help users find relevant parliamentary activity from Saeima.lv within specified date ranges., '# Your
+          Task', 'Retrieve parliamentary documents using chronological estimation, fetch full text in batches, then use your
+          judgment to identify what''s truly relevant. When in doubt about relevance, include the document - it''s better
+          to provide extra context than to miss potentially useful information.', '# Tools and When to Use Them', '## saeima_scraper(date_from,
+          date_to, date_type, keyword_query)', '**Purpose**: Get parliamentary documents for a date range using chronological
+          estimation.', '**Call once**: Set keyword_query="" (scraper uses date estimation, not keywords).', '**How it works**:
+          Scraper fetches all document IDs, estimates positions via linear interpolation based on chronological numbering,
+          and returns estimated range + 100% buffer to prevent edge misses.', '**Always set**: `date_type="all"` to search
+          all document types.', '**Important**: Always use empty string for keyword_query (filtering happens post-fetch via
+          LLM judgment).', '## get_cached_summary(url)', '**Purpose**: Check if a document was previously analyzed.', '**Call
+          in parallel**: After collecting all unique URLs, check cache for all of them at once.', '**Returns**: `status=''hit''`
+          (use cached summary) or `status=''miss''` (needs fetching).', '## fetch_saeima_document(url)', '**Purpose**: Retrieve
+          full document text to assess relevance.', '**Call in parallel**: Process uncached documents in batches of 8-10 to
+          avoid context overflow.', '**Important**: Read full text before judging relevance - titles alone are insufficient.',
+        '## store_document_summary(url, summary)', '**Purpose**: Save document analysis for future use.', '**Call in parallel**:
+          After analyzing a batch, store all summaries at once (2-3 bullet points each).', '## check_workflow_complete()',
+        '**Purpose**: Verify all discovered documents have been processed.', '**Call once**: Before providing your final response.',
+        '**Critical**: When this returns `allowed=True`, immediately respond with your findings. Your response gets saved
+          to session state.', '# Document Types', '- Draft Legislation', '- Decision Drafts', '- Deputy Questions', '- Requests',
+        '- Committee Meetings', '# Scraper Architecture (Important!)', 'The Saeima scraper uses a **unique chronological estimation
+          strategy**:', '**How it works**:', '1. Documents are numbered chronologically: 1/Lp14 (2022) → 1149/Lp14 (2025)',
+        2. Scraper fetches all document IDs from OpenView (fast - metadata only), 3. Samples first and last documents to determine
+          date boundaries, 4. Uses linear interpolation to estimate document positions for your date range, 5. Returns estimated
+          range + 100% buffer to prevent missing edge documents, '**Why this matters**:', '- Reduces ~1000+ documents to ~60
+          relevant ones automatically', '- No keyword filtering needed (already pre-filtered by date estimation)', '- Buffer
+          ensures no relevant documents missed at range edges', '- You filter the remaining ~60 using LLM intelligence, not
+          crude keyword matching', '**Your role**: Judge relevance from full document text, not titles.', '# Processing Strategy',
+        '1. **Search**: Call saeima_scraper once with keyword_query="" (scraper uses estimation + buffer)', '2. **Understand**:
+          Scraper returns ~60 documents (estimated range + 100% buffer for safety)', '3. **Check cache**: Verify all URLs
+          in parallel', '4. **Fetch in batches**: Process 8-10 uncached documents at a time in parallel', '5. **Filter intelligently**:',
+        '- Read the `full_text` field completely for EVERY document', '- Titles are often generic - use full content to judge
+          relevance', '- Consider both direct mentions and indirect/related topics', '- **When uncertain, include the document**
+          - better to provide context than miss relevant information', '6. **Store**: Save summaries for each batch in parallel
+          (2-3 bullet points explaining relevance or potential connection)', '7. **Validate**: Call check_workflow_complete',
+        '8. **Respond**: Present relevant documents with brief overview.', '# Output Format', 'Found [N] relevant documents
+          from [date_from] to [date_to]:', '1. **[Type]** - [Title]', '- Date: [YYYY-MM-DD]', '- Status: [Status]', '- [Summary
+          point 1]', '- [Summary point 2]', '- [Summary point 3]', '- URL: [document_url]', '**If very few or no relevant
+          documents found**: Note this, but include some documents with closest potential relevance.', '# Constraints', '-
+          Always use empty string for keyword_query (scraper uses chronological estimation)', '- Expect ~60 documents with
+          100% buffer (scraper pre-filters via estimation)', '- Process documents in batches of 8-10 maximum', '- Read `full_text`
+          field before judging relevance - titles alone are often insufficient', '- When uncertain about relevance, include
+          the document rather than exclude it', '- Use LLM judgment for filtering (more accurate than keyword matching on
+          titles)', '- Call check_workflow_complete before final response', '- Respond immediately when check_workflow_complete
+          returns allowed=True']
+      output_key: saeima_results
+      function: create_saeima_agent
+  tap_agent:
+    type: instance
+    models: [gemini-2.5-flash]
+    tools: [wrapped_tap_scraper, wrapped_get_cached_summary, wrapped_fetch_tap_document, store_document_summary, check_workflow_complete]
+    params:
+      name: TAPAgent
+      generate_content_config:
+        class: GenerateContentConfig
+        temperature: "0.4"
+      planner: BuiltInPlanner
+      description: 'Searches TAP Portal for government documents: draft legislation, meetings, consultations, tasks, declassified
+        docs, and notices'
+      instruction: ['You are a TAP Portal search specialist. Your task: find relevant Latvian government documents within
+          user-specified date ranges using creative concept expansion and full-text analysis.', '## Tools', '**tap_scraper(date_from,
+          date_to, date_type, keyword_query)**', '- Purpose: Gets ALL documents in a date range', '- When: First step - always
+          call with `keyword_query=""` and `date_type="all"`', '- Why empty keyword: Titles are generic ("Cabinet Meeting
+          2025-09-02"). Fetch all, then analyze full content', '- Returns: List of document metadata (id, title, url, doc_type,
+          dates, ministry)', '**get_cached_summary(url)**', '- Purpose: Check if document was previously analyzed in this
+          session', '- When: After tap_scraper, call in PARALLEL for ALL URLs (batch all cache checks in ONE tool call round)',
+        '- Returns: `status=''hit''` (reuse cached summary) or `status=''miss''` (must fetch)', '**fetch_tap_document(url)**',
+        '- Purpose: Retrieve full document text', '- When: For cache misses, call in PARALLEL batches of 10-15 docs (ALL fetches
+          for a batch in ONE tool call round)', '- Returns: `full_text` (complete content), `title`, `metadata`', '- CRITICAL:
+          Never fetch sequentially - batch ALL URLs for a group, call all at once', '**store_document_summary(url, title,
+          summary, metadata)**', '- Purpose: Save analysis for future reuse', '- When: After analyzing each batch, call in
+          PARALLEL for all docs in that batch', '- Summary format: 2-3 concise bullet points about relevance', '**check_workflow_complete()**',
+        '- Purpose: Verify all discovered documents processed before responding', '- When: Once, after ALL fetching/storing
+          complete', '- Returns: `allowed=True` (ready to respond) or error (missing documents)', '## Execution Pattern',
+        'CORRECT - Parallel batching:', '```', 1. tap_scraper() → 44 docs found, '2. get_cached_summary() × 44 URLs in ONE
+          call → 0 hits, 44 misses', '3. Group: meetings(30), legal_acts(10), tasks(4)', 4. fetch_tap_document() × 15 meeting
+          URLs in ONE call, 5. fetch_tap_document() × 15 meeting URLs in ONE call, 6. fetch_tap_document() × 10 legal_acts
+          URLs in ONE call, 7. fetch_tap_document() × 4 task URLs in ONE call, '8. Analyze all 44 fetched documents, apply
+          concept expansion', 9. store_document_summary() × 44 URLs in parallel, 10. check_workflow_complete() → allowed=True,
+        11. Return findings, '```', 'WRONG - Sequential (causes 5+ minute delays):', '```', ❌ fetch_tap_document(url1) → wait
+          → fetch_tap_document(url2) → wait → ..., '```', '## Concept Expansion for Relevance', 'Query: "Mākslīgā intelekta
+          regulējums"', 'Expand to:', '- Core: "mākslīgais intelekts", "MI", "skaitļošana"', '- Related: "automatizācija",
+          "mašīnmācīšanās", "algoritmi", "datu aizsardzība"', '- Broader: "tehnoloģijas", "digitālā transformācija", "inovācijas"',
+        '**Analysis rules:**', 1. Read `full_text` field completely - ignore titles (often they're too generic), 2. Search
+          for ALL expanded concept variations, 3. Mark relevant ONLY if full_text discusses the topic (not just title word
+          matches), 4. Consider indirect mentions, '## Output Format', 'Found [N] relevant documents from [date_from] to [date_to]:',
+        '1. **[Document Title]** ([doc_type])', '- Date: [matched_date_type] ([date])', '- [Relevance point 1]', '- [Relevance
+          point 2]', '- [Relevance point 3]', '- URL: [url]', '## Critical Rules', '1. ALWAYS batch tool calls - fetch 10-15
+          docs in ONE parallel call, never sequentially', 2. NEVER use keyword_query - always pass "", 3. NEVER judge relevance
+          from titles - always read full_text, 4. ALWAYS call check_workflow_complete() before final response, 5. Respond
+          IMMEDIATELY when check_workflow_complete() returns allowed=True]
+      output_key: tap_results
+      function: create_tap_agent
+  translator:
+    type: instance
+    models: [gemini-2.5-flash-lite]
+    params:
+      name: TranslatorAgent
+      description: Translates English report draft to professional Latvian
+      instruction: [You are a professional translator specializing in legal Latvian., 'You will receive:', '- English draft:
+          {+draft_report_en|No draft available+}', 'Your task:', 'Translate the entire report to Latvian while:', '1. **Preserving
+          Structure**: Keep the exact Markdown format', '- ## Kopsavilkums (Summary)', '- ## Izmaiņas pa Avotiem (Changes
+          by Source)', '- ### Likumi.lv, ### TAP Portāls, ### Saeima', '2. **Professional Latvian**:', '- Use proper legal
+          terminology', '- Formal, professional tone', '- Correct grammar and spelling', '3. **Preserving ALL Content**:',
+        '- Do NOT add information not in the English draft', '- Do NOT remove any items', '- Translate dates, titles, descriptions
+          accurately', '- Keep URLs unchanged', '4. **URL Formatting**:', '- Keep source URLs on separate lines', '- Format:
+          `- [Source URL]`', Output ONLY the Latvian translation in Markdown format.]
+      output_key: draft_latvian_report
+      function: create_translator_agent
+
+models:
+  gemini-2.5-flash:
+    type: function
+    agents: [saeima_agent, likumi_agent, tap_agent]
+    params:
+      wrapper: Gemini
+      model: config[model]
+      retry_options: config[retry_options]
+  gemini-2.5-flash-lite:
+    type: function
+    agents: [aggregator_agent, translator, critic, refiner]
+    params:
+      wrapper: Gemini
+      model: config[model]
+      retry_options: config[retry_options]
+
+tools:
+  check_workflow_complete:
+    type: function
+    agents: [saeima_agent, likumi_agent, tap_agent]
+    params:
+      description: |-
+        Check if all mandatory workflow steps have been completed.
+
+        IMPORTANT: Call this tool before providing your final answer to the user.
+        This ensures you've fetched all documents from the search results.
+
+        Returns:
+            dict with 'allowed' (bool) and 'message' (str)
+  exit_report_loop:
+    type: wrapper
+    agents: [refiner]
+    params:
+      wrapper: FunctionTool
+      wraps: exit_report_loop
+      description: Signal that report translation is approved and loop should exit.
+  store_document_summary:
+    type: function
+    agents: [saeima_agent, likumi_agent, tap_agent]
+    params:
+      description: |-
+        Store a document summary if not already present.
+
+        Args:
+                url: Document URL.
+                title: Document title.
+                summary: Short relevance summary.
+                metadata: Additional metadata dict.
+                tool_context: ADK ToolContext for state access.
+
+        Returns:
+                {"status": "stored"} when added
+                {"status": "exists"} if already present
+                {"status": "trimmed"} if added after trimming oldest
+  wrapped_fetch_likumi_document:
+    type: function
+    agents: [likumi_agent]
+    params:
+      description: Wrapped fetch_likumi_document that tracks calls for enforcement.
+  wrapped_fetch_saeima_document:
+    type: function
+    agents: [saeima_agent]
+    params:
+      description: Wrapped Saeima document fetch with enforcer tracking.
+  wrapped_fetch_tap_document:
+    type: function
+    agents: [tap_agent]
+    params:
+      description: Wrapped fetch_tap_document that tracks calls for enforcement.
+  wrapped_get_cached_summary:
+    type: function
+    agents: [saeima_agent, likumi_agent, tap_agent]
+    params:
+      description: Wrapped get_cached_summary that tracks calls for enforcement.
+  wrapped_likumi_scraper:
+    type: function
+    agents: [likumi_agent]
+    params:
+      description: Wrapped likumi_scraper that tracks results for enforcement.
+  wrapped_saeima_scraper:
+    type: function
+    agents: [saeima_agent]
+    params:
+      description: Wrapped Saeima scraper with enforcer tracking.
+  wrapped_tap_scraper:
+    type: function
+    agents: [tap_agent]
+    params:
+      description: Wrapped tap_scraper that tracks results for enforcement.
+
+teams:
+  coordinator:
+    type: sequential
+    agents: [coordinator, parallel_data_collection, aggregator_agent, report_agent]
+  parallel_data_collection:
+    type: parallel
+    agents: [parallel_data_collection, likumi_agent, tap_agent, saeima_agent]
+  parallel_team:
+    type: parallel
+    agents: [parallel_team, subs]
+  quality_loop:
+    type: loop
+    agents: [quality_loop, critic, refiner]
+  report_pipeline:
+    type: sequential
+    agents: [report_pipeline, translator, quality_loop]
+  root_agent:
+    type: sequential
+    agents: [root_agent, parallel_team, aggregator, report]
+
+imports:
+  _dt: datetime.datetime
+  agent: agent
+  AgentTool: google.adk.tools.agent_tool.AgentTool
+  Any: typing.Any
+  BaseHTTPMiddleware: starlette.middleware.base.BaseHTTPMiddleware
+  BeautifulSoup: bs4.BeautifulSoup
+  BuiltInPlanner: google.adk.planners.BuiltInPlanner
+  cached_fetch_document: cached_fetch_document.cached_fetch_document
+  check_workflow_complete: tools.workflow_check.check_workflow_complete
+  CORSMiddleware: starlette.middleware.cors.CORSMiddleware
+  create_aggregator_agent: aggregator_agent.create_aggregator_agent
+  create_coordinator_agent: coordinator_agent.create_coordinator_agent
+  create_likumi_agent: likumi_agent.create_likumi_agent
+  create_report_agent: report_agent.create_report_agent
+  create_saeima_agent: saeima_agent.create_saeima_agent
+  create_tap_agent: tap_agent.create_tap_agent
+  datetime: datetime.datetime
+  Dict: typing.Dict
+  fetch_likumi_document: tools.fetch_likumi_document
+  fetch_saeima_document: fetch_saeima_document.fetch_saeima_document
+  fetch_tap_document: tools.fetch_tap_document
+  FunctionTool: google.adk.tools.FunctionTool
+  Gemini: google.adk.models.google_llm.Gemini
+  generate_date_list: utils.date_utils.generate_date_list
+  get_agent: agents.agent_registry.get_agent
+  get_cached_summary: tools.get_cached_summary
+  get_coordinator: agents.agent_registry.get_coordinator
+  get_enforcer: tools.enforcement_wrapper.get_enforcer
+  JSONResponse: starlette.responses.JSONResponse
+  likumi_scraper: tools.likumi_scraper
+  List: typing.List
+  LlmAgent: google.adk.agents.LlmAgent
+  logging: logging
+  LoggingPlugin: google.adk.plugins.logging_plugin.LoggingPlugin
+  LoopAgent: google.adk.agents.LoopAgent
+  MODEL_CONFIGS: base_config.MODEL_CONFIGS
+  Optional: typing.Optional
+  os: os
+  ParallelAgent: google.adk.agents.ParallelAgent
+  re: re
+  requests: requests
+  reset_enforcer: tools.enforcement_wrapper.reset_enforcer
+  root_agent: agent.root_agent
+  saeima_scraper: saeima_scraper.saeima_scraper
+  SequentialAgent: google.adk.agents.SequentialAgent
+  store_document_summary: tools.store_document_summary
+  subprocess: subprocess
+  sync_playwright: playwright.sync_api.sync_playwright
+  sys: sys
+  tap_scraper: tools.tap_scraper
+  time: time
+  timedelta: datetime.timedelta
+  ToolContext: google.adk.tools.tool_context.ToolContext
+  Tuple: typing.Tuple
+  types: google.genai.types
+  unicodedata: unicodedata
+  validate_date_range: utils.date_utils.validate_date_range
+
+functions:
+  __init__:
+    type: sync
+    module: agents.agent
+    args: [self, app]
+  _ensure_playwright:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [self]
+    params:
+      returns: bool
+  _estimate_doc_position:
+    type: sync
+    module: agents.tools.saeima_scraper
+    args: [total_docs, target_date, earliest_date, latest_date]
+    params:
+      returns: int
+  _fetch_all_document_ids:
+    type: sync
+    module: agents.tools.saeima_scraper
+    args: [doc_type]
+    params:
+      returns: List[Dict]
+  _fetch_document_date:
+    type: sync
+    module: agents.tools.saeima_scraper
+    args: [url]
+    params:
+      returns: Optional[datetime]
+  _get_date_range_with_buffer:
+    type: sync
+    module: agents.tools.saeima_scraper
+    args: [all_docs, doc_type, dt_from, dt_to, buffer_pct]
+    params:
+      returns: List[Dict]
+  _get_docs_key:
+    type: sync
+    module: agents.tools.memory_tools
+    args: [url]
+    params:
+      returns: str
+  _make_request:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [self, url, method, data, max_retries]
+    params:
+      returns: Optional[requests.Response]
+  _normalize:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [text]
+    params:
+      returns: str
+  _parse_declassified_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, start_date, end_date]
+    params:
+      returns: Dict
+  _parse_informative_notice_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, start_date, end_date]
+    params:
+      returns: Dict
+  _parse_legal_act_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, start_date, end_date]
+    params:
+      returns: Dict
+  _parse_meeting_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, meeting_type, start_date, end_date]
+    params:
+      returns: Dict
+  _parse_public_participation_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, start_date, end_date]
+    params:
+      returns: Dict
+  _parse_result_item:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [self, item_soup]
+    params:
+      returns: Optional[Dict]
+  _parse_task_item:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [item, start_date, end_date]
+    params:
+      returns: Dict
+  _scrape_declassified_documents:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _scrape_informative_notices:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _scrape_legal_acts:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _scrape_meetings:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [meeting_type, start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _scrape_public_participation:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _scrape_tasks:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [start_date, end_date, keyword, max_results]
+    params:
+      returns: List[Dict]
+  _tap_scraper_browser_fallback:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [date_from, date_to, date_type, keyword_query, max_results]
+    params:
+      returns: dict
+  cached_fetch_document:
+    type: sync
+    module: agents.tools.cached_fetch_document
+    args: [url]
+    params:
+      returns: Dict
+  can_complete:
+    type: sync
+    module: agents.tools.enforcement_wrapper
+    args: [self]
+    params:
+      returns: tuple
+  check_workflow_complete:
+    type: sync
+    module: agents.tools.workflow_check
+    params:
+      returns: dict
+  clear_cache:
+    type: sync
+    module: agents.tools.likumi_fetch_document
+  configure_middleware:
+    type: sync
+    module: agents.agent
+    args: [app]
+  create_aggregator_agent:
+    type: sync
+    module: agents.aggregator_agent
+  create_coordinator_agent:
+    type: sync
+    module: agents.coordinator_agent
+  create_coordinator_with_logging:
+    type: sync
+    module: agents.coordinator_agent
+  create_likumi_agent:
+    type: sync
+    module: agents.likumi_agent
+  create_report_agent:
+    type: sync
+    module: agents.report_agent
+  create_report_critic_agent:
+    type: sync
+    module: agents.report_agent
+  create_report_refiner_agent:
+    type: sync
+    module: agents.report_agent
+  create_saeima_agent:
+    type: sync
+    module: agents.saeima_agent
+  create_tap_agent:
+    type: sync
+    module: agents.tap_agent
+  create_translator_agent:
+    type: sync
+    module: agents.report_agent
+  dispatch:
+    type: async
+    module: agents.agent
+    args: [self, request, call_next]
+  exit_report_loop:
+    type: sync
+    module: agents.report_agent
+  fetch_likumi_document:
+    type: sync
+    module: agents.tools.likumi_fetch_document
+    args: [url]
+    params:
+      returns: Dict
+  fetch_saeima_document:
+    type: sync
+    module: agents.tools.fetch_saeima_document
+    args: [url, max_retries]
+    params:
+      returns: Dict
+  fetch_tap_document:
+    type: sync
+    module: agents.tools.fetch_tap_document
+    args: [url]
+    params:
+      returns: dict
+  generate_date_list:
+    type: sync
+    module: agents.utils.date_utils
+    args: [date_from, date_to]
+    params:
+      returns: list[str]
+  get_agent:
+    type: sync
+    module: agents.agent_registry
+    args: [role]
+  get_cached_summary:
+    type: sync
+    module: agents.tools.memory_tools
+    args: [url, tool_context]
+    params:
+      returns: Dict
+  get_coordinator:
+    type: sync
+    module: agents.agent_registry
+    args: [sequential_name]
+    params:
+      returns: SequentialAgent
+  get_enforcer:
+    type: sync
+    module: agents.tools.enforcement_wrapper
+    params:
+      returns: WorkflowEnforcer
+  get_parallel_specialists:
+    type: sync
+    module: agents.agent_registry
+    args: [include]
+    params:
+      returns: ParallelAgent
+  get_scraper:
+    type: sync
+    module: agents.tools.likumi_scraper
+    params:
+      returns: LikumiScraper
+  iso_to_latvian_date:
+    type: sync
+    module: agents.utils.date_utils
+    args: [iso_date]
+    params:
+      returns: str
+  likumi_scraper:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [date_from, date_to, date_type, keyword_query, max_results, enable_browser_fallback]
+    params:
+      returns: Dict
+  list_registered:
+    type: sync
+    module: agents.agent_registry
+    params:
+      returns: List[str]
+  parse_date_range:
+    type: sync
+    module: agents.utils.date_utils
+    args: [date_range_str]
+    params:
+      returns: Optional[Tuple]
+  parse_latvian_date:
+    type: sync
+    module: agents.utils.date_utils
+    args: [date_str]
+    params:
+      returns: Optional[str]
+  reset:
+    type: sync
+    module: agents.tools.enforcement_wrapper
+    args: [self]
+    params:
+      returns: None
+  reset_agent:
+    type: sync
+    module: agents.agent_registry
+    args: [role]
+  reset_all:
+    type: sync
+    module: agents.agent_registry
+  reset_enforcer:
+    type: sync
+    module: agents.tools.enforcement_wrapper
+    params:
+      returns: None
+  saeima_scraper:
+    type: sync
+    module: agents.tools.saeima_scraper
+    args: [date_from, date_to, date_type, keyword_query, max_results]
+    params:
+      returns: Dict
+  search_daily:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [self, date_from, date_to, date_type, keyword_filter, max_results]
+    params:
+      returns: List[Dict]
+  search_daily_browser:
+    type: sync
+    module: agents.tools.likumi_scraper
+    args: [self, date_from, date_to, date_type, max_results]
+    params:
+      returns: List[Dict]
+  store_document_summary:
+    type: sync
+    module: agents.tools.memory_tools
+    args: [url, title, summary, metadata, tool_context]
+    params:
+      returns: Dict
+  tap_scraper:
+    type: sync
+    module: agents.tools.tap_scraper
+    args: [date_from, date_to, date_type, keyword_query, max_results, enable_browser_fallback]
+    params:
+      returns: dict
+  track_tool_call:
+    type: sync
+    module: agents.tools.enforcement_wrapper
+    args: [self, tool_name, tool_result]
+    params:
+      returns: None
+  validate_date_range:
+    type: sync
+    module: agents.utils.date_utils
+    args: [date_from, date_to]
+    params:
+      returns: bool
+  wrapped_fetch_likumi_document:
+    type: sync
+    module: agents.likumi_agent
+    args: [url, tool_context]
+  wrapped_fetch_saeima_document:
+    type: sync
+    module: agents.saeima_agent
+    args: [url, tool_context]
+  wrapped_fetch_tap_document:
+    type: sync
+    module: agents.tap_agent
+    args: [url, tool_context]
+  wrapped_get_cached_summary:
+    type: sync
+    module: agents.tap_agent
+    args: [url, tool_context]
+  wrapped_likumi_scraper:
+    type: sync
+    module: agents.likumi_agent
+    args: [date_from, date_to, date_type, keyword_query, max_results, enable_browser_fallback, tool_context]
+  wrapped_saeima_scraper:
+    type: sync
+    module: agents.saeima_agent
+    args: [date_from, date_to, date_type, keyword_query, max_results, tool_context]
+  wrapped_tap_scraper:
+    type: sync
+    module: agents.tap_agent
+    args: [date_from, date_to, date_type, keyword_query, max_results, enable_browser_fallback, tool_context]
+
+variables:
+  API_KEY:
+    type: env
+    params:
+      caller: [os.getenv]
+      path: [agents.agent]
+
+processes:
+  python:
+    type: shell
+    actions: [exec]
+    args: [[-m, playwright, install, chromium]]
+    params:
+      caller: [subprocess.run]
+      shell: ["False"]
+      ref: sys.executable
+
+networks:
+  tapportals.mk.gov.lv:
+    type: api
+    actions: [GET]
+    urls: ['/legal_acts?page=1', '/public_participation?page=1', '/tasks?page=1', '/declassified_documents?page=1', '/informative_notices?page=1',
+      /informative_notices/None]
+    protocols: [https]
+    ports: ["443"]
+    params:
+      caller: [_scrape_legal_acts, _scrape_meetings, _scrape_public_participation, _scrape_tasks, _scrape_declassified_documents,
+        _scrape_informative_notices, _fetch_all_document_ids, _fetch_document_date]
+  tapportals.mk.gov.lv.1:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/legal_acts/{project_id}
+      caller: [_parse_legal_act_item]
+  tapportals.mk.gov.lv.2:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/meetings/{meeting_type}
+      caller: [_scrape_meetings]
+  tapportals.mk.gov.lv.3:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv{protocol}
+      caller: [_parse_meeting_item]
+  tapportals.mk.gov.lv.4:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/meetings/{meeting_type}/{meeting_date}
+      caller: [_parse_meeting_item]
+  tapportals.mk.gov.lv.5:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/public_participation/{project_id}
+      caller: [_parse_public_participation_item]
+  tapportals.mk.gov.lv.6:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/tasks/{task_num}
+      caller: [_parse_task_item]
+  tapportals.mk.gov.lv.7:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/declassified_documents/{project_id}
+      caller: [_parse_declassified_item]
+  tapportals.mk.gov.lv.8:
+    type: api
+    actions: [GET]
+    urls: ['/{...}']
+    protocols: [https]
+    ports: ["443"]
+    params:
+      pattern: https://tapportals.mk.gov.lv/informative_notices/{project_id}
+      caller: [_parse_informative_notice_item]
